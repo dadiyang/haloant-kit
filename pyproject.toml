@@ -1,0 +1,29 @@
+[project]
+name = "haloant-kit"
+version = "0.1.0"
+description = "Shared infrastructure for haloant projects"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-instrumentation-httpx",
+    "opentelemetry-instrumentation-sqlite3",
+    "opentelemetry-instrumentation-logging",
+]
+alerts = ["httpx"]
+all = ["haloant-kit[otel,alerts]"]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
