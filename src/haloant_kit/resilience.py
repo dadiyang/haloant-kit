@@ -47,4 +47,5 @@ async def retry_async(fn, *, config: RetryConfig | None = None, logger_override=
             log.debug("retry_async: sleeping %.1fs before attempt %d", delay, attempt + 1)
             await asyncio.sleep(delay)
 
+    assert last_exc is not None, "unreachable: max_attempts >= 1"
     raise last_exc

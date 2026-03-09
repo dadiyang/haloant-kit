@@ -3,7 +3,7 @@ name = "haloant-kit"
 version = "0.1.0"
 description = "Shared infrastructure for haloant projects"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["python-dotenv"]
 
 [project.optional-dependencies]
 otel = [
