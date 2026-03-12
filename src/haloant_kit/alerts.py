@@ -97,6 +97,21 @@ class AlertManager:
         key = cooldown_key or alert_type
         self._last_sent[key] = time.time()
 
+    def _update_warning_tracker(
+        self, alert_type: str, severity: str, cooldown_key: str | None = None,
+    ):
+        """Track WARNING first-occurrence for escalation; clear on CRITICAL/INFO."""
+        track_key = cooldown_key or alert_type
+        if severity == WARNING:
+            if track_key not in self._warning_tracker:
+                self._warning_tracker[track_key] = (time.time(), 0)
+        elif severity in (CRITICAL, INFO):
+            self._warning_tracker.pop(track_key, None)
+            # Convention: xxx_recovered INFO auto-clears xxx WARNING tracker.
+            if alert_type.endswith("_recovered"):
+                base_key = alert_type.removesuffix("_recovered")
+                self._warning_tracker.pop(base_key, None)
+
     async def send(
         self,
         alert_type: str,
@@ -144,18 +159,7 @@ class AlertManager:
         if detail:
             text += f"\n\n{_escape_html(detail)}"
 
-        # Escalation tracker: record first WARNING occurrence
-        track_key = cooldown_key or alert_type
-        if severity == WARNING:
-            if track_key not in self._warning_tracker:
-                self._warning_tracker[track_key] = (time.time(), 0)
-        elif severity in (CRITICAL, INFO):
-            # CRITICAL or INFO means state change (degraded or recovered), clear tracker
-            self._warning_tracker.pop(track_key, None)
-            # Convention: xxx_recovered INFO auto-clears xxx WARNING tracker.
-            if alert_type.endswith("_recovered"):
-                base_key = alert_type.removesuffix("_recovered")
-                self._warning_tracker.pop(base_key, None)
+        self._update_warning_tracker(alert_type, severity, cooldown_key)
 
         ok = await self._sender.send_message(self._chat_id, text)
         if ok:
@@ -264,6 +268,8 @@ class AlertManager:
         text = f"{emoji} <b>{severity}</b>: {safe_title}"
         if detail:
             text += f"\n\n{_escape_html(detail)}"
+
+        self._update_warning_tracker(alert_type, severity, cooldown_key)
 
         ok = self._sender.send_message_sync(self._chat_id, text)
         if ok:
