@@ -4,15 +4,14 @@ Provides project-agnostic alerting via Telegram sendMessage API. Projects pass
 their own cooldown tables at construction time; no project-specific config
 loading or hardcoded defaults.
 
-Uses httpx directly — no python-telegram-bot dependency, no session lifecycle
-overhead.
+Uses TelegramSender (python-telegram-bot) — proxy-aware, hard-timeout-protected.
 """
 
 import logging
 import os
 import time
 
-import httpx
+from haloant_kit.telegram import TelegramSender
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +25,6 @@ _SEVERITY_EMOJI = {
     WARNING: "\u26a0\ufe0f",    # warning
     CRITICAL: "\U0001f6a8",     # critical
 }
-
-_SEND_TIMEOUT = 10  # seconds
 
 
 def _escape_html(text: str) -> str:
@@ -47,6 +44,7 @@ class AlertManager:
         cooldowns: Mapping of alert_type -> cooldown seconds. Default empty
             dict (no cooldown = every alert is sent). CRITICAL always bypasses.
         silent: If True, never send Telegram (log-only mode).
+        proxy_url: Optional HTTP/HTTPS proxy URL, passed through to TelegramSender.
     """
 
     def __init__(
@@ -55,20 +53,22 @@ class AlertManager:
         chat_id: str = "",
         cooldowns: dict[str, int] | None = None,
         silent: bool = False,
+        proxy_url: str | None = None,
     ):
         self._silent = silent
         self._cooldowns: dict[str, int] = cooldowns if cooldowns is not None else {}
         self._bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self._chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self._last_sent: dict[str, float] = {}  # alert_type -> unix timestamp
-        self._api_url = (
-            f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-            if self._bot_token else ""
-        )
         # Channel self-check: consecutive send failure count
         self._consecutive_failures: int = 0
         # Escalation tracker: cooldown_key -> (first_seen_ts, escalation_count)
         self._warning_tracker: dict[str, tuple[float, int]] = {}
+
+        self._sender: TelegramSender | None = (
+            TelegramSender(self._bot_token, proxy_url=proxy_url)
+            if self._bot_token else None
+        )
 
         if self._silent:
             logger.info("AlertManager: silent mode enabled, alerts will be log-only")
@@ -113,8 +113,6 @@ class AlertManager:
 
         Returns True if Telegram message was sent successfully.
         """
-        import asyncio
-
         emoji = _SEVERITY_EMOJI.get(severity, "")
         log_msg = f"[ALERT:{severity}] {title}"
         if detail:
@@ -137,7 +135,7 @@ class AlertManager:
             return False
 
         # Try Telegram
-        if not self._api_url or not self._chat_id:
+        if not self._sender or not self._chat_id:
             return False
 
         # Build HTML message (no Markdown escaping issues)
@@ -159,47 +157,23 @@ class AlertManager:
                 base_key = alert_type.removesuffix("_recovered")
                 self._warning_tracker.pop(base_key, None)
 
-        for attempt in range(2):
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(
-                        self._api_url,
-                        json={
-                            "chat_id": self._chat_id,
-                            "text": text,
-                            "parse_mode": "HTML",
-                        },
-                        timeout=_SEND_TIMEOUT,
-                    )
-                if resp.status_code == 200:
-                    self._record_sent(alert_type, cooldown_key)
-                    self._consecutive_failures = 0
-                    return True
-                logger.warning("Telegram API error %d: %s", resp.status_code, resp.text[:200])
-                self._consecutive_failures += 1
-                if self._consecutive_failures >= 3:
-                    logger.critical(
-                        "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
-                        self._consecutive_failures,
-                    )
-                return False
-            except Exception as e:
-                if attempt == 0:
-                    logger.warning("Telegram send failed (attempt 1): %r — retrying in 5s", e)
-                    await asyncio.sleep(5)
-                else:
-                    logger.warning("Telegram send failed (attempt 2): %r", e)
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= 3:
-                        logger.critical(
-                            "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
-                            self._consecutive_failures,
-                        )
-        return False
+        ok = await self._sender.send_message(self._chat_id, text)
+        if ok:
+            self._record_sent(alert_type, cooldown_key)
+            self._consecutive_failures = 0
+            return True
+        else:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 3:
+                logger.critical(
+                    "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
+                    self._consecutive_failures,
+                )
+            return False
 
     def is_available(self) -> bool:
         """Channel Protocol: whether this channel can send messages."""
-        return bool(self._api_url and self._chat_id and not self._silent)
+        return bool(self._sender and self._chat_id and not self._silent)
 
     def clear_warning(self, cooldown_key: str) -> None:
         """Explicitly remove a WARNING from the escalation tracker.
@@ -283,7 +257,7 @@ class AlertManager:
         if self._silent:
             return False
 
-        if not self._api_url or not self._chat_id:
+        if not self._sender or not self._chat_id:
             return False
 
         safe_title = _escape_html(title)
@@ -291,39 +265,16 @@ class AlertManager:
         if detail:
             text += f"\n\n{_escape_html(detail)}"
 
-        for attempt in range(2):
-            try:
-                resp = httpx.post(
-                    self._api_url,
-                    json={
-                        "chat_id": self._chat_id,
-                        "text": text,
-                        "parse_mode": "HTML",
-                    },
-                    timeout=_SEND_TIMEOUT,
+        ok = self._sender.send_message_sync(self._chat_id, text)
+        if ok:
+            self._record_sent(alert_type, cooldown_key)
+            self._consecutive_failures = 0
+            return True
+        else:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 3:
+                logger.critical(
+                    "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
+                    self._consecutive_failures,
                 )
-                if resp.status_code == 200:
-                    self._record_sent(alert_type, cooldown_key)
-                    self._consecutive_failures = 0
-                    return True
-                logger.warning("Telegram API error %d: %s", resp.status_code, resp.text[:200])
-                self._consecutive_failures += 1
-                if self._consecutive_failures >= 3:
-                    logger.critical(
-                        "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
-                        self._consecutive_failures,
-                    )
-                return False
-            except Exception as e:
-                if attempt == 0:
-                    logger.warning("Telegram send failed (attempt 1): %r — retrying in 5s", e)
-                    time.sleep(5)
-                else:
-                    logger.warning("Telegram send failed (attempt 2): %r", e)
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= 3:
-                        logger.critical(
-                            "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
-                            self._consecutive_failures,
-                        )
-        return False
+            return False

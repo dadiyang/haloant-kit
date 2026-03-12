@@ -13,7 +13,7 @@ otel = [
     "opentelemetry-instrumentation-sqlite3",
     "opentelemetry-instrumentation-logging",
 ]
-alerts = ["httpx"]
+alerts = ["python-telegram-bot>=22.0"]
 all = ["haloant-kit[otel,alerts]"]
 dev = ["pytest", "pytest-asyncio"]
 
