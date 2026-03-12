@@ -133,20 +133,29 @@ class TelegramSender:
         httpx.Timeout relies on socket-level timeouts, which can be bypassed
         when traffic goes through a transparent proxy (e.g. Clash TUN). The
         proxy accepts the connection instantly, then the upstream hangs —
-        httpx never raises ConnectTimeout. A thread with join(timeout=N)
-        guarantees we return within _HARD_TIMEOUT seconds.
+        httpx never raises ConnectTimeout.
+
+        Defence: asyncio.wait_for cancels the coroutine after _HARD_TIMEOUT,
+        so the thread exits cleanly. The outer join is a safety net only.
         """
         result: dict = {"ok": False, "error": None}
 
+        async def _with_timeout():
+            return await asyncio.wait_for(coro, timeout=_HARD_TIMEOUT)
+
         def _worker():
             try:
-                result["ok"] = asyncio.run(coro)
+                result["ok"] = asyncio.run(_with_timeout())
+            except asyncio.TimeoutError:
+                result["error"] = TimeoutError(
+                    f"coroutine timed out after {_HARD_TIMEOUT}s"
+                )
             except Exception as e:
                 result["error"] = e
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
-        thread.join(timeout=_HARD_TIMEOUT)
+        thread.join(timeout=_HARD_TIMEOUT + 2)  # grace for asyncio cleanup
 
         if thread.is_alive():
             logger.warning(

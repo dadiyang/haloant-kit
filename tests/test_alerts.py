@@ -136,11 +136,13 @@ class TestCooldownLogic:
 
 
 class TestSendSync:
+    """send_sync delegates to send() via thread+asyncio.run, so mock send_message (async)."""
+
     def test_silent_mode_logs_only(self):
         am, mock_sender = _make_am_with_mock_sender(silent=True)
         result = am.send_sync("test", INFO, "title")
         assert result is False
-        mock_sender.send_message_sync.assert_not_called()
+        mock_sender.send_message.assert_not_called()
 
     def test_no_credentials_logs_only(self):
         with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}):
@@ -150,19 +152,18 @@ class TestSendSync:
 
     def test_successful_send(self):
         am, mock_sender = _make_am_with_mock_sender()
-        mock_sender.send_message_sync.return_value = True
+        mock_sender.send_message = AsyncMock(return_value=True)
 
         result = am.send_sync("test", INFO, "Test Alert", "some detail")
         assert result is True
-        mock_sender.send_message_sync.assert_called_once()
-        call_args = mock_sender.send_message_sync.call_args
-        # First positional arg is chat_id
+        mock_sender.send_message.assert_called_once()
+        call_args = mock_sender.send_message.call_args
         assert call_args[0][0] == "456"
         assert "Test Alert" in call_args[0][1]
 
     def test_send_failure_increments_counter(self):
         am, mock_sender = _make_am_with_mock_sender()
-        mock_sender.send_message_sync.return_value = False
+        mock_sender.send_message = AsyncMock(return_value=False)
 
         result = am.send_sync("test", INFO, "title")
         assert result is False
@@ -170,7 +171,7 @@ class TestSendSync:
 
     def test_three_failures_trigger_critical_log(self, caplog):
         am, mock_sender = _make_am_with_mock_sender()
-        mock_sender.send_message_sync.return_value = False
+        mock_sender.send_message = AsyncMock(return_value=False)
 
         import logging
         with caplog.at_level(logging.CRITICAL):
@@ -182,33 +183,33 @@ class TestSendSync:
 
     def test_success_resets_failure_counter(self):
         am, mock_sender = _make_am_with_mock_sender()
-        mock_sender.send_message_sync.return_value = False
+        mock_sender.send_message = AsyncMock(return_value=False)
         am.send_sync("test", INFO, "title")
         assert am._consecutive_failures == 1
 
-        mock_sender.send_message_sync.return_value = True
+        mock_sender.send_message = AsyncMock(return_value=True)
         am.send_sync("test2", INFO, "title")
         assert am._consecutive_failures == 0
 
     def test_cooldown_blocks_send(self):
         am, mock_sender = _make_am_with_mock_sender(cooldowns={"test": 300})
-        mock_sender.send_message_sync.return_value = True
+        mock_sender.send_message = AsyncMock(return_value=True)
 
         am.send_sync("test", WARNING, "first")
-        assert mock_sender.send_message_sync.call_count == 1
+        assert mock_sender.send_message.call_count == 1
 
         am.send_sync("test", WARNING, "second")
         # Still only called once — cooldown blocked the second
-        assert mock_sender.send_message_sync.call_count == 1
+        assert mock_sender.send_message.call_count == 1
 
     def test_critical_bypasses_cooldown(self):
         am, mock_sender = _make_am_with_mock_sender(cooldowns={"test": 300})
-        mock_sender.send_message_sync.return_value = True
+        mock_sender.send_message = AsyncMock(return_value=True)
 
         am.send_sync("test", WARNING, "first")
         am.send_sync("test", CRITICAL, "urgent")
         # CRITICAL sends despite cooldown
-        assert mock_sender.send_message_sync.call_count == 2
+        assert mock_sender.send_message.call_count == 2
 
 
 class TestSendAsync:

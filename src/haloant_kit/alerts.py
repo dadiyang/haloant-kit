@@ -7,11 +7,13 @@ loading or hardcoded defaults.
 Uses TelegramSender (python-telegram-bot) — proxy-aware, hard-timeout-protected.
 """
 
+import asyncio
 import logging
 import os
+import threading
 import time
 
-from haloant_kit.telegram import TelegramSender
+from haloant_kit.telegram import TelegramSender, _HARD_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -241,46 +243,31 @@ class AlertManager:
         detail: str = "",
         cooldown_key: str | None = None,
     ) -> bool:
-        """Synchronous version of send() for non-async callers."""
-        emoji = _SEVERITY_EMOJI.get(severity, "")
-        log_msg = f"[ALERT:{severity}] {title}"
-        if detail:
-            log_msg += f" | {detail}"
+        """Synchronous version of send() — delegates to send() via thread.
 
-        if severity == CRITICAL:
-            logger.critical(log_msg)
-        elif severity == WARNING:
-            logger.warning(log_msg)
-        else:
-            logger.info(log_msg)
+        Uses the same thread + asyncio.wait_for pattern as TelegramSender._run_sync
+        to guarantee return within _HARD_TIMEOUT seconds.
+        """
+        coro = self.send(alert_type, severity, title, detail, cooldown_key)
+        result: dict = {"ok": False}
 
-        if not self._check_cooldown(alert_type, severity, cooldown_key):
+        async def _with_timeout():
+            return await asyncio.wait_for(coro, timeout=_HARD_TIMEOUT)
+
+        def _worker():
+            try:
+                result["ok"] = asyncio.run(_with_timeout())
+            except asyncio.TimeoutError:
+                logger.warning("AlertManager.send_sync timed out after %ds", _HARD_TIMEOUT)
+            except Exception as e:
+                logger.warning("AlertManager.send_sync failed: %r", e)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join(timeout=_HARD_TIMEOUT + 2)
+
+        if thread.is_alive():
+            logger.warning("AlertManager.send_sync blocked >%ds", _HARD_TIMEOUT)
             return False
 
-        # Silent mode (e.g. backtest) — log only, never send Telegram
-        if self._silent:
-            return False
-
-        if not self._sender or not self._chat_id:
-            return False
-
-        safe_title = _escape_html(title)
-        text = f"{emoji} <b>{severity}</b>: {safe_title}"
-        if detail:
-            text += f"\n\n{_escape_html(detail)}"
-
-        self._update_warning_tracker(alert_type, severity, cooldown_key)
-
-        ok = self._sender.send_message_sync(self._chat_id, text)
-        if ok:
-            self._record_sent(alert_type, cooldown_key)
-            self._consecutive_failures = 0
-            return True
-        else:
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= 3:
-                logger.critical(
-                    "[ALERT_CHANNEL_FAILED] Telegram send failed %d consecutive times, channel may be unavailable",
-                    self._consecutive_failures,
-                )
-            return False
+        return result["ok"]
