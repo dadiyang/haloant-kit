@@ -17,7 +17,7 @@ from haloant_kit.config import (
 
 class TestValidateUserId:
     def test_valid_ids(self):
-        assert _validate_user_id("irons") == "irons"
+        assert _validate_user_id("alice") == "alice"
         assert _validate_user_id("user-1") == "user-1"
         assert _validate_user_id("a123") == "a123"
         assert _validate_user_id("my_user") == "my_user"

@@ -93,7 +93,14 @@ class AlertManager:
             return True
         key = cooldown_key or alert_type
         last = self._last_sent.get(key, 0)
-        return (time.time() - last) >= cooldown
+        elapsed = time.time() - last
+        if elapsed < cooldown:
+            logger.info(
+                "Cooldown active: type=%s key=%s (%.0fs/%.0fs remaining)",
+                alert_type, key, cooldown - elapsed, cooldown,
+            )
+            return False
+        return True
 
     def _record_sent(self, alert_type: str, cooldown_key: str | None = None):
         key = cooldown_key or alert_type

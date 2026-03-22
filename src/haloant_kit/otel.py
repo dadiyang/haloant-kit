@@ -3,7 +3,7 @@
 Reusable across projects: copy this file + call setup_otel() after configure_logging().
 
     from haloant_kit.otel import setup_otel
-    setup_otel("trade_monitor", user_id="irons")
+    setup_otel("my_service", user_id="alice")
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def setup_otel(service_name: str, **extra_attrs: str) -> None:
 
     Args:
         service_name: e.g. "trade_monitor", "order_watcher"
-        **extra_attrs: additional Resource attributes, e.g. user_id="irons"
+        **extra_attrs: additional Resource attributes, e.g. user_id="alice"
     """
     global _initialized
     if _initialized:

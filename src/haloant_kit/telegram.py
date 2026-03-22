@@ -66,15 +66,34 @@ class TelegramSender:
         """Send a text message.
 
         Returns True on success, False on any error (logged at WARNING level).
+
+        Uses explicit initialize/shutdown to ensure the internal httpx client
+        is properly initialised for the *current* event loop.  This is essential
+        when the caller drives each send via ``asyncio.run()`` (which creates
+        and destroys a fresh loop every time).
+
+        The send result is tracked separately from cleanup — if the API call
+        succeeds but ``shutdown()`` raises, we still return True (the message
+        was delivered).  This prevents downstream cooldown logic from treating
+        a cleanup error as a send failure.
         """
+        sent = False
         try:
-            await self._bot.send_message(
-                chat_id=chat_id, text=text, parse_mode=parse_mode
-            )
-            return True
+            await self._bot.initialize()
+            try:
+                await self._bot.send_message(
+                    chat_id=chat_id, text=text, parse_mode=parse_mode
+                )
+                sent = True
+            finally:
+                try:
+                    await self._bot.shutdown()
+                except Exception as e:
+                    logger.debug("Bot shutdown error (ignored, sent=%s): %r", sent, e)
         except Exception as e:
-            logger.warning("TelegramSender.send_message failed: %r", e)
-            return False
+            if not sent:
+                logger.warning("TelegramSender.send_message failed: %r", e)
+        return sent
 
     async def send_photo(
         self,
@@ -87,18 +106,27 @@ class TelegramSender:
 
         Returns True on success, False on any error (logged at WARNING level).
         """
+        sent = False
         try:
-            with open(photo_path, "rb") as fh:
-                await self._bot.send_photo(
-                    chat_id=chat_id,
-                    photo=fh,
-                    caption=caption or None,
-                    parse_mode=parse_mode if caption else None,
-                )
-            return True
+            await self._bot.initialize()
+            try:
+                with open(photo_path, "rb") as fh:
+                    await self._bot.send_photo(
+                        chat_id=chat_id,
+                        photo=fh,
+                        caption=caption or None,
+                        parse_mode=parse_mode if caption else None,
+                    )
+                sent = True
+            finally:
+                try:
+                    await self._bot.shutdown()
+                except Exception as e:
+                    logger.debug("Bot shutdown error (ignored, sent=%s): %r", sent, e)
         except Exception as e:
-            logger.warning("TelegramSender.send_photo failed: %r", e)
-            return False
+            if not sent:
+                logger.warning("TelegramSender.send_photo failed: %r", e)
+        return sent
 
     # ------------------------------------------------------------------
     # Sync API (thin wrappers around _run_sync)
