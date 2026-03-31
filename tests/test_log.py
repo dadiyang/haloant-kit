@@ -49,6 +49,30 @@ class TestJsonFormatter:
         assert output["service"] == "svc"
         assert output["user_id"] == "u1"
 
+    def test_extra_fields_passthrough(self):
+        """extra={"device": ..., "screenshot": ...} should appear in JSON output."""
+        formatter = JsonFormatter()
+        record = logging.LogRecord(
+            name="test", level=logging.ERROR, pathname="", lineno=0,
+            msg="op failed", args=(), exc_info=None,
+        )
+        record.service = "svc"
+        record.user_id = "u1"
+        record.trace_id = ""
+        # Simulate logger.error(msg, extra={...})
+        record.device = "ABC"
+        record.screenshot = "/tmp/x.png"
+        import json
+        output = json.loads(formatter.format(record))
+        assert output["device"] == "ABC"
+        assert output["screenshot"] == "/tmp/x.png"
+        # Standard LogRecord attrs must NOT leak
+        assert "created" not in output
+        assert "pathname" not in output
+        assert "lineno" not in output
+        assert "args" not in output
+        assert "threadName" not in output
+
     def test_trace_id_included(self):
         formatter = JsonFormatter()
         record = logging.LogRecord(

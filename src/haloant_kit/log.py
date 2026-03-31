@@ -55,6 +55,20 @@ class ContextFilter(logging.Filter):
 
 # ── JsonFormatter ─────────────────────────────────────────────────────────────
 
+# Standard LogRecord attributes — must be excluded from extra passthrough.
+_STANDARD_RECORD_ATTRS: frozenset[str] = frozenset({
+    "args", "created", "exc_info", "exc_text", "filename", "funcName",
+    "levelname", "levelno", "lineno", "message", "module", "msecs", "msg",
+    "name", "pathname", "process", "processName", "relativeCreated",
+    "stack_info", "taskName", "thread", "threadName",
+})
+
+# Custom attributes already handled explicitly in format().
+_HANDLED_CUSTOM_ATTRS: frozenset[str] = frozenset({
+    "trace_id", "user_id", "service", "otelTraceID", "otelSpanID",
+})
+
+
 class JsonFormatter(logging.Formatter):
     """Output one JSON object per line.
 
@@ -83,6 +97,12 @@ class JsonFormatter(logging.Formatter):
         obj["service"] = getattr(record, "service", "")
         if record.exc_info:
             obj["exc_info"] = self.formatException(record.exc_info)
+        # ── Extra fields passthrough ─────────────────────────────────────
+        # Pass through any non-standard attributes set via logger.xxx(msg, extra={...})
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_RECORD_ATTRS or key in _HANDLED_CUSTOM_ATTRS or key in obj:
+                continue
+            obj[key] = value
         return json.dumps(obj, ensure_ascii=False)
 
 
