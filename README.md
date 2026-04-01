@@ -6,7 +6,7 @@ Shared infrastructure for Python backend services. Logging, alerting, health che
 
 | Module | What it does | Lines |
 |--------|-------------|-------|
-| `log` | JSON logging with daily gzip rotation, context filters | 268 |
+| `log` | Structured text logging with daily gzip rotation, context filters, trace_id | 340 |
 | `alerts` | Telegram notifications with cooldown, severity levels, and dedup | 280 |
 | `health` | Heartbeat files for daemon health monitoring | 228 |
 | `telegram` | Telegram message sender with proxy auto-detection | 198 |
@@ -37,8 +37,19 @@ pip install haloant-kit[all]
 ```python
 from haloant_kit.log import configure_logging
 
-configure_logging("my-service", log_dir="~/.my-service/logs")
-# JSON formatted, daily rotation, gzip compression
+configure_logging("my-service", user_id="alice", log_dir="~/.my-service/logs")
+# Daily rotation, gzip compression
+# File output (TextFormatter — human-readable, grep/tail friendly):
+#   2026-04-01 09:43:25 INFO     [my-service] [alice] [1b2a7f0a] task completed | items=42
+#   2026-04-01 09:43:35 ERROR    [my-service] [alice] [1b2a7f0a] upload failed
+#   Traceback (most recent call last):
+#     ...
+# Console output (stderr):
+#   2026-04-01 09:43:25 INFO     [my-service] task completed
+
+# For ELK/Loki ingestion, use JsonFormatter explicitly:
+# from haloant_kit.log import JsonFormatter
+# handler.setFormatter(JsonFormatter())
 ```
 
 ### Alerting

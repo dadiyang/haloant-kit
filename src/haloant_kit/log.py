@@ -1,4 +1,7 @@
-"""统一日志配置 — JsonFormatter + ContextFilter + daily gzip 轮转。
+"""统一日志配置 — TextFormatter / JsonFormatter + ContextFilter + daily gzip 轮转。
+
+文件日志默认使用 TextFormatter（固定列，人类可读，grep/tail 友好）。
+需要接入 ELK/Loki 等日志聚合系统时可切换为 JsonFormatter。
 
 公共 API：
     configure_logging(service, user_id, level, console, log_dir)
@@ -106,6 +109,68 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(obj, ensure_ascii=False)
 
 
+class TextFormatter(logging.Formatter):
+    """Human-readable fixed-column file format with optional context fields.
+
+    Layout::
+
+        {asctime 19} {level 8} [{logger}] [{user_id}] [{trace 8}] {message} {| extra}
+
+    Design for grep/awk/tail friendliness:
+    - Fixed-width time and level columns for reliable column splitting
+    - user_id shows "-" when not set (single-user or tool scripts)
+    - trace_id truncated to first 8 chars; shows "--------" when absent
+    - Extra fields (from logger.xxx(msg, extra={...})) appended as | k=v pairs
+    - Exception tracebacks printed on subsequent lines (standard Python format)
+    """
+
+    _TRACE_PLACEHOLDER = "-" * 8
+
+    def __init__(self, datefmt: str | None = None) -> None:
+        super().__init__(datefmt=datefmt or LOG_DATE_FORMAT)
+
+    def _resolve_trace_id(self, record: logging.LogRecord) -> str:
+        """Extract trace_id (OTel preferred, legacy fallback), return first 8 chars."""
+        otel_trace = getattr(record, "otelTraceID", "0" * 32)
+        if otel_trace != "0" * 32:
+            return otel_trace[:8]
+        trace_id: str = getattr(record, "trace_id", "") or ""
+        return trace_id[:8] if trace_id else self._TRACE_PLACEHOLDER
+
+    def _collect_extra(self, record: logging.LogRecord) -> dict[str, Any]:
+        """Collect non-standard, non-handled attributes from the record."""
+        extra = {}
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_RECORD_ATTRS or key in _HANDLED_CUSTOM_ATTRS:
+                continue
+            extra[key] = value
+        return extra
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: A003
+        asctime = self.formatTime(record, self.datefmt)
+        user_id = getattr(record, "user_id", "") or "-"
+        trace = self._resolve_trace_id(record)
+        msg = record.getMessage()
+
+        line = f"{asctime} {record.levelname:<8s} [{record.name}] [{user_id}] [{trace}] {msg}"
+
+        # Append extra fields as | key=value
+        extra = self._collect_extra(record)
+        if extra:
+            pairs = " ".join(f"{k}={v}" for k, v in extra.items())
+            line = f"{line} | {pairs}"
+
+        # Append exception traceback
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            line = f"{line}\n{record.exc_text}"
+        if record.stack_info:
+            line = f"{line}\n{record.stack_info}"
+
+        return line
+
+
 # ── Gzip rotator ──────────────────────────────────────────────────────────────
 
 def _gzip_rotator(source: str, dest: str) -> None:
@@ -199,7 +264,7 @@ def configure_logging(
     console: bool = True,
     log_dir: Path | str | None = None,
 ) -> logging.Logger:
-    """Configure root logger with JSON file handler + optional console handler.
+    """Configure root logger with text file handler + optional console handler.
 
     Idempotent: a module-level flag prevents duplicate configuration even when
     pytest's LogCaptureHandler is already attached to root before the test body runs.
@@ -224,7 +289,7 @@ def configure_logging(
 
     ctx_filter = ContextFilter(service=service, user_id=user_id)
 
-    # ── File handler (JSON, daily rotation, gzip) ─────────────────────────
+    # ── File handler (text, daily rotation, gzip) ──────────────────────────
     if log_dir is not None:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +305,7 @@ def configure_logging(
         )
         fh.rotator = _gzip_rotator
         fh.namer = _gzip_namer
-        fh.setFormatter(JsonFormatter())
+        fh.setFormatter(TextFormatter())
         fh.addFilter(ctx_filter)
         root.addHandler(fh)
 
