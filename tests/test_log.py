@@ -4,6 +4,7 @@ import logging
 import haloant_kit.log as log_mod
 from haloant_kit.log import (
     JsonFormatter,
+    TextFormatter,
     ContextFilter,
     LogMetricsCollector,
     configure_logging,
@@ -172,3 +173,125 @@ class TestConfigureLogging:
     def test_get_logger_alias(self):
         lg = get_logger("my.module")
         assert lg.name == "my.module"
+
+    def test_file_handler_uses_text_formatter(self, tmp_path):
+        """configure_logging should write TextFormatter (not JSON) to the log file."""
+        _reset_logging_state()
+        configure_logging(service="svc", user_id="u1", console=False, log_dir=tmp_path)
+        logger = logging.getLogger("format_check")
+        logger.info("hello text")
+        log_file = next(tmp_path.glob("*.log"))
+        content = log_file.read_text()
+        # TextFormatter output has fixed columns; JSON output starts with '{'
+        assert not content.strip().startswith("{"), "File log must not be JSON"
+        assert "hello text" in content
+        assert "[format_check]" in content
+        _reset_logging_state()
+
+
+class TestTextFormatter:
+    """Tests for the human-readable TextFormatter."""
+
+    def _make_record(self, msg="test message", level=logging.INFO, name="myapp",
+                     **kwargs) -> logging.LogRecord:
+        record = logging.LogRecord(
+            name=name, level=level, pathname="", lineno=0,
+            msg=msg, args=(), exc_info=None,
+        )
+        for k, v in kwargs.items():
+            setattr(record, k, v)
+        return record
+
+    def test_basic_layout(self):
+        """Output has fixed-column layout: timestamp level [logger] [user] [trace] msg."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="alice", trace_id="abcdef1234567890")
+        line = formatter.format(record)
+        # Level is left-padded to 8 chars
+        assert "INFO    " in line or "INFO     " in line or line.split()[1].startswith("INFO")
+        assert "[myapp]" in line
+        assert "[alice]" in line
+        assert "[abcdef12]" in line  # trace truncated to 8 chars
+        assert "test message" in line
+
+    def test_no_user_id_shows_dash(self):
+        """When user_id is not set, column shows '-'."""
+        formatter = TextFormatter()
+        record = self._make_record()
+        # user_id not set on record at all → should fall back to "-"
+        line = formatter.format(record)
+        assert "[-]" in line
+
+    def test_empty_user_id_shows_dash(self):
+        """Empty string user_id also shows '-'."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="")
+        line = formatter.format(record)
+        assert "[-]" in line
+
+    def test_no_trace_id_shows_placeholder(self):
+        """When no trace_id, show 8 dashes."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1")
+        # No trace_id attribute at all
+        line = formatter.format(record)
+        assert "[--------]" in line
+
+    def test_trace_id_truncated_to_8(self):
+        """trace_id longer than 8 chars is truncated."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1", trace_id="1234567890abcdef")
+        line = formatter.format(record)
+        assert "[12345678]" in line
+        assert "1234567890abcdef" not in line
+
+    def test_otel_trace_preferred_over_legacy(self):
+        """OTel otelTraceID takes priority over trace_id field."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1", trace_id="legacy000")
+        record.otelTraceID = "otel1234abcdef00" * 2  # 32 hex chars
+        line = formatter.format(record)
+        assert "[otel1234]" in line
+        assert "legacy" not in line
+
+    def test_extra_fields_appended_as_pipe_kv(self):
+        """Extra logger.xxx(msg, extra={...}) fields appear as '| k=v' suffix."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1", trace_id="tr1")
+        record.symbol = "AAPL"
+        record.price = 150.5
+        line = formatter.format(record)
+        assert "| " in line
+        assert "symbol=AAPL" in line
+        assert "price=150.5" in line
+
+    def test_no_extra_fields_no_pipe(self):
+        """Without extra fields, no pipe separator appears."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1", trace_id="tr1")
+        line = formatter.format(record)
+        assert " | " not in line
+
+    def test_exception_appended_on_next_line(self):
+        """Exception traceback is appended after the log line."""
+        formatter = TextFormatter()
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            import sys
+            exc_info = sys.exc_info()
+        record = self._make_record(user_id="u1")
+        record.exc_info = exc_info
+        output = formatter.format(record)
+        lines = output.splitlines()
+        assert len(lines) > 1
+        full = "\n".join(lines)
+        assert "ValueError" in full
+        assert "boom" in full
+
+    def test_not_json(self):
+        """Output is plain text, not JSON."""
+        formatter = TextFormatter()
+        record = self._make_record(user_id="u1")
+        line = formatter.format(record)
+        assert not line.strip().startswith("{")
